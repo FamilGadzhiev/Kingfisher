@@ -31,7 +31,7 @@ public typealias AuthenticationChallengeResponsable = AuthenticationChallengeRes
 
 /// Protocol indicates that an authentication challenge could be handled.
 public protocol AuthenticationChallengeResponsible: AnyObject {
-
+    
     /// Called when a session level authentication challenge is received.
     /// This method provide a chance to handle and response to the authentication
     /// challenge before downloading could start.
@@ -47,7 +47,7 @@ public protocol AuthenticationChallengeResponsible: AnyObject {
         _ downloader: ImageDownloader,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void)
-
+    
     /// Called when a task level authentication challenge is received.
     /// This method provide a chance to handle and response to the authentication
     /// challenge before downloading could start.
@@ -65,23 +65,45 @@ public protocol AuthenticationChallengeResponsible: AnyObject {
 }
 
 extension AuthenticationChallengeResponsible {
-
+    
     public func downloader(
         _ downloader: ImageDownloader,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void)
     {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
-            if let trustedHosts = downloader.trustedHosts, trustedHosts.contains(challenge.protectionSpace.host) {
-                let credential = URLCredential(trust: challenge.protectionSpace.serverTrust!)
-                completionHandler(.useCredential, credential)
-                return
-            }
+        guard
+            let trust = challenge.protectionSpace.serverTrust,
+            let urlPath = Bundle.main.url(forResource: "lprtrassir_cert_out", withExtension: "der"),
+            let caCertData = try? Data(contentsOf: urlPath),
+            let caCert = SecCertificateCreateWithData(nil, caCertData as CFData),
+            let remoteCert = SecTrustGetCertificateAtIndex(trust, 0)
+        else {
+            completionHandler(.cancelAuthenticationChallenge,nil)
+            return
         }
-
-        completionHandler(.performDefaultHandling, nil)
+        
+        let policy = SecPolicyCreateBasicX509()
+        var optionalTrust: SecTrust?
+        var trustResult: SecTrustResultType = SecTrustResultType.invalid
+        
+        guard
+            SecTrustCreateWithCertificates([remoteCert] as CFArray, policy, &optionalTrust) == errSecSuccess,
+            let caTrust = optionalTrust,
+            SecTrustSetAnchorCertificates(caTrust, [caCert] as CFArray) == errSecSuccess,
+            SecTrustGetTrustResult(caTrust, &trustResult) == errSecSuccess
+        else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        
+        switch trustResult {
+        case .unspecified,.proceed:
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        default:
+            completionHandler(.cancelAuthenticationChallenge,nil)
+        }
     }
-
+    
     public func downloader(
         _ downloader: ImageDownloader,
         task: URLSessionTask,
@@ -90,5 +112,5 @@ extension AuthenticationChallengeResponsible {
     {
         completionHandler(.performDefaultHandling, nil)
     }
-
+    
 }
